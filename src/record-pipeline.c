@@ -364,7 +364,13 @@ static void pipeline_video_tick(void *param, float seconds)
 	UNUSED_PARAMETER(seconds);
 	struct record_pipeline *p = param;
 
-	if (p->state != PIPELINE_RECORDING)
+	/* Push frames during STARTING (so the output/encoder can bootstrap)
+	 * and RECORDING (normal operation). Also keep pushing during
+	 * STOPPING so obs_output_stop() can drain the encoder without
+	 * deadlocking. */
+	enum record_pipeline_state s = p->state;
+	if (s != PIPELINE_STARTING && s != PIPELINE_RECORDING &&
+	    s != PIPELINE_STOPPING)
 		return;
 
 	render_source_to_video_output(p);
@@ -707,8 +713,11 @@ void record_pipeline_stop(struct record_pipeline *pipeline)
 	pipeline->state = PIPELINE_STOPPING;
 	pthread_mutex_unlock(&pipeline->mutex);
 
+	/* Force-stop the output to avoid blocking the UI thread.
+	 * A graceful obs_output_stop() waits for the encoder to drain,
+	 * which can deadlock if frames stop arriving. */
 	if (pipeline->file_output)
-		obs_output_stop(pipeline->file_output);
+		obs_output_force_stop(pipeline->file_output);
 
 	release_pipeline_objects(pipeline);
 
