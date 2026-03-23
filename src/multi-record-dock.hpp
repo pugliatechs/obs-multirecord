@@ -16,11 +16,10 @@ extern "C" {
 }
 
 /**
- * A single row in the recordings table - one video+audio pair.
+ * A single row in the recordings table - one source recording entry.
  */
 struct RecordingEntry {
 	QString videoSourceName;
-	QString audioSourceName;
 	QString outputDir;
 	QString filenameFormat;
 	QString container;
@@ -28,8 +27,6 @@ struct RecordingEntry {
 	QString audioEncoderId;
 	int videoBitrate = 2500;
 	int audioBitrate = 160;
-	int width = 0;  /* 0 = match source */
-	int height = 0;
 	int fpsNum = 30;
 	int fpsDen = 1;
 
@@ -38,19 +35,19 @@ struct RecordingEntry {
 };
 
 /**
- * Dialog for editing a recording pair's settings (output, encoders, etc).
+ * Dialog for editing a recording entry's settings.
  */
-class PairSettingsDialog : public QDialog {
+class EntrySettingsDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	PairSettingsDialog(RecordingEntry &entry,
-			   const QStringList &sourceList,
-			   const QStringList &videoEncoderIds,
-			   const QStringList &videoEncoderNames,
-			   const QStringList &audioEncoderIds,
-			   const QStringList &audioEncoderNames,
-			   QWidget *parent = nullptr);
+	EntrySettingsDialog(RecordingEntry &entry,
+			    const QStringList &videoSourceList,
+			    const QStringList &videoEncoderIds,
+			    const QStringList &videoEncoderNames,
+			    const QStringList &audioEncoderIds,
+			    const QStringList &audioEncoderNames,
+			    QWidget *parent = nullptr);
 
 private slots:
 	void onBrowseDir();
@@ -60,7 +57,6 @@ private:
 	RecordingEntry &m_entry;
 
 	QComboBox *m_videoSourceCombo;
-	QComboBox *m_audioSourceCombo;
 	QLineEdit *m_outputDirEdit;
 	QComboBox *m_containerCombo;
 	QComboBox *m_videoEncoderCombo;
@@ -71,7 +67,7 @@ private:
 };
 
 /**
- * Qt dock widget that manages multiple source recording pairs.
+ * Qt dock widget that manages multiple source recordings.
  */
 class MultiRecordDock : public QDockWidget {
 	Q_OBJECT
@@ -84,7 +80,7 @@ public:
 	void loadConfig();
 
 private slots:
-	void onAddPair();
+	void onAddEntry();
 	void onRemoveSelected();
 	void onStartAll();
 	void onStopAll();
@@ -99,7 +95,7 @@ private:
 	void addEntryRow(const RecordingEntry &entry);
 	void updateRowDisplay(int row);
 
-	QStringList enumerateSources();
+	QStringList enumerateVideoSources();
 	void enumerateEncoders();
 
 	record_pipeline_config buildPipelineConfig(const RecordingEntry &entry);
@@ -111,16 +107,15 @@ private:
 	QVector<RecordingEntry> m_entries;
 
 	/* Cached lists */
-	QStringList m_sourceList;
+	QStringList m_videoSourceList;
 	QStringList m_videoEncoderIds;
 	QStringList m_videoEncoderNames;
 	QStringList m_audioEncoderIds;
 	QStringList m_audioEncoderNames;
 
-	/* Compact table columns */
+	/* Table columns */
 	enum Column {
-		COL_VIDEO_SOURCE = 0,
-		COL_AUDIO_SOURCE,
+		COL_SOURCE = 0,
 		COL_STATUS,
 		COL_ACTIONS,
 		COL_COUNT,

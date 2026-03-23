@@ -19,7 +19,6 @@ enum record_pipeline_state {
 
 struct record_pipeline_config {
 	char *video_source_name;
-	char *audio_source_name;
 
 	char *output_dir;
 	char *filename_format;
@@ -40,16 +39,12 @@ struct record_pipeline_config {
 struct record_pipeline {
 	struct record_pipeline_config config;
 
-	/* Source references */
+	/* Source reference */
 	obs_source_t *video_source;
-	obs_source_t *audio_source;
 
 	/* View-based rendering (no GPU readback needed) */
 	obs_view_t *view;
 	video_t *view_video;
-
-	/* Audio */
-	audio_t *audio_output;
 
 	/* Encoders and output */
 	obs_encoder_t *video_encoder;

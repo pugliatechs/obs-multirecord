@@ -38,7 +38,6 @@ void record_pipeline_config_copy(struct record_pipeline_config *dst,
 				 const struct record_pipeline_config *src)
 {
 	dst->video_source_name = safe_strdup(src->video_source_name);
-	dst->audio_source_name = safe_strdup(src->audio_source_name);
 	dst->output_dir = safe_strdup(src->output_dir);
 	dst->filename_format = safe_strdup(src->filename_format);
 	dst->container = safe_strdup(src->container);
@@ -55,7 +54,6 @@ void record_pipeline_config_copy(struct record_pipeline_config *dst,
 void record_pipeline_config_free(struct record_pipeline_config *cfg)
 {
 	bfree(cfg->video_source_name);
-	bfree(cfg->audio_source_name);
 	bfree(cfg->output_dir);
 	bfree(cfg->filename_format);
 	bfree(cfg->container);
@@ -78,7 +76,8 @@ static void sanitize_name(struct dstr *out, const char *name)
 		char c = *s;
 		if (c == '/' || c == '\\' || c == ':' || c == '*' ||
 		    c == '?' || c == '"' || c == '<' || c == '>' ||
-		    c == '|' || c == '.' || (unsigned char)c < 0x20)
+		    c == '|' || c == '.' || c == ' ' ||
+		    (unsigned char)c < 0x20)
 			c = '_';
 		dstr_cat_ch(out, c);
 	}
@@ -206,42 +205,6 @@ static void on_output_start(void *param, calldata_t *cd)
 }
 
 /* ------------------------------------------------------------------ */
-/* Audio input callback (pulled by audio output thread)               */
-/* ------------------------------------------------------------------ */
-
-static bool audio_input_callback(void *param, uint64_t start_ts,
-				 uint64_t end_ts, uint64_t *out_ts,
-				 uint32_t mixers,
-				 struct audio_output_data *mixes)
-{
-	UNUSED_PARAMETER(mixers);
-	UNUSED_PARAMETER(end_ts);
-	struct record_pipeline *p = param;
-
-	if (!p->audio_source)
-		return false;
-
-	struct obs_source_audio_mix source_mix;
-	obs_source_get_audio_mix(p->audio_source, &source_mix);
-
-	const struct audio_output_info *info =
-		audio_output_get_info(p->audio_output);
-	size_t channels = get_audio_channels(info->speakers);
-	size_t frames = AUDIO_OUTPUT_FRAMES;
-
-	for (size_t ch = 0; ch < channels && ch < MAX_AV_PLANES; ch++) {
-		if (source_mix.output[0].data[ch]) {
-			memcpy(mixes[0].data[ch],
-			       source_mix.output[0].data[ch],
-			       frames * sizeof(float));
-		}
-	}
-
-	*out_ts = start_ts;
-	return true;
-}
-
-/* ------------------------------------------------------------------ */
 /* Pipeline lifecycle                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -314,32 +277,16 @@ static void release_pipeline_objects(struct record_pipeline *p)
 		blog(LOG_INFO, LOG_PREFIX "View destroyed");
 	}
 
-	/* 4. Close audio output */
-	if (p->audio_output) {
-		audio_output_close(p->audio_output);
-		p->audio_output = NULL;
-	}
-
-	/* 5. Deactivate and release sources */
-	if (p->source_showing) {
-		if (p->video_source) {
-			obs_source_dec_showing(p->video_source);
-			obs_source_dec_active(p->video_source);
-		}
-		if (p->audio_source && p->audio_source != p->video_source) {
-			obs_source_dec_showing(p->audio_source);
-			obs_source_dec_active(p->audio_source);
-		}
+	/* 4. Deactivate and release source */
+	if (p->source_showing && p->video_source) {
+		obs_source_dec_showing(p->video_source);
+		obs_source_dec_active(p->video_source);
 		p->source_showing = false;
 	}
 
 	if (p->video_source) {
 		obs_source_release(p->video_source);
 		p->video_source = NULL;
-	}
-	if (p->audio_source) {
-		obs_source_release(p->audio_source);
-		p->audio_source = NULL;
 	}
 }
 
@@ -373,26 +320,9 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		return false;
 	}
 
-	if (p->config.audio_source_name && *p->config.audio_source_name) {
-		p->audio_source =
-			obs_get_source_by_name(p->config.audio_source_name);
-		if (!p->audio_source) {
-			set_error(p, "Audio source not found");
-			release_pipeline_objects(p);
-			return false;
-		}
-	} else {
-		p->audio_source = p->video_source;
-		obs_source_get_ref(p->audio_source);
-	}
-
-	/* 2. Activate sources */
+	/* 2. Activate source */
 	obs_source_inc_active(p->video_source);
 	obs_source_inc_showing(p->video_source);
-	if (p->audio_source != p->video_source) {
-		obs_source_inc_active(p->audio_source);
-		obs_source_inc_showing(p->audio_source);
-	}
 	p->source_showing = true;
 
 	/* 3. Determine resolution (native source size) */
@@ -456,22 +386,7 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 
 	blog(LOG_INFO, LOG_PREFIX "View created and added to render loop");
 
-	/* 5. Create audio output */
-	struct audio_output_info aoi = {0};
-	aoi.name = "multi-rec-audio";
-	aoi.speakers = SPEAKERS_STEREO;
-	aoi.samples_per_sec = 48000;
-	aoi.format = AUDIO_FORMAT_FLOAT_PLANAR;
-	aoi.input_callback = audio_input_callback;
-	aoi.input_param = p;
-
-	if (audio_output_open(&p->audio_output, &aoi) != AUDIO_OUTPUT_SUCCESS) {
-		set_error(p, "Failed to open audio output");
-		release_pipeline_objects(p);
-		return false;
-	}
-
-	/* 6. Create video encoder (connects to view's video output) */
+	/* 5. Create video encoder (connects to view's video output) */
 	const char *venc_id = p->config.video_encoder_id;
 	if (!venc_id || !*venc_id)
 		venc_id = "obs_x264";
@@ -493,7 +408,7 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	/* Connect encoder to the view's video output (not OBS main) */
 	obs_encoder_set_video(p->video_encoder, p->view_video);
 
-	/* 7. Create audio encoder */
+	/* 6. Create audio encoder (connects to OBS main audio) */
 	const char *aenc_id = p->config.audio_encoder_id;
 	if (!aenc_id || !*aenc_id)
 		aenc_id = "ffmpeg_aac";
@@ -512,7 +427,8 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		release_pipeline_objects(p);
 		return false;
 	}
-	obs_encoder_set_audio(p->audio_encoder, p->audio_output);
+	/* Use OBS main audio output for reliable audio capture */
+	obs_encoder_set_audio(p->audio_encoder, obs_get_audio());
 
 	/* 8. Create file output */
 	char *output_path =

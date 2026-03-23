@@ -1,27 +1,28 @@
 # OBS Multi Source Recorder
 
-An OBS Studio plugin that records individual video+audio source pairs to separate files, independent of the main program recording.
+An OBS Studio plugin that records individual video sources to separate files, independent of the main program recording. Audio is captured from the OBS main audio mix.
 
 ## Features
 
-- **Multiple source pairs** - record any combination of video and audio sources simultaneously
+- **Multiple source recordings** - record any number of video sources simultaneously to separate files
 - **Independent from program recording** - source recordings run alongside (or without) the standard OBS recording
-- **Per-pair configuration** - each recording pair has its own codec, bitrate, container format, and output directory
-- **Dock panel UI** - convenient table-based interface docked in OBS for managing all recording pairs
-- **Auto-detection** - enumerates available sources, video encoders (x264, NVENC, etc.), and audio encoders (AAC, etc.)
-- **Config persistence** - recording pairs are saved and restored with the OBS profile
+- **Per-entry configuration** - each recording has its own video/audio codec, bitrate, container format, and output directory
+- **Native source resolution** - sources are recorded at their native resolution without scaling
+- **Dock panel UI** - compact table-based interface docked in OBS with a settings dialog per entry
+- **Auto-detection** - enumerates available video sources and encoders (x264, VAAPI, etc.) at runtime
+- **Config persistence** - recording entries are saved and restored with the OBS profile
 
 ## How It Works
 
-Each recording pair creates an independent pipeline:
+Each recording entry creates an independent pipeline using OBS views:
 
 ```
-Video Source -> texrender -> stagesurface -> virtual video_output -> video encoder -+
-                                                                                    +-> ffmpeg_muxer -> file
-Audio Source -> audio_output_info callback -> virtual audio_output -> audio encoder -+
+Video Source -> obs_view -> OBS render loop -> video encoder -+
+                                                              +-> ffmpeg_muxer -> file
+OBS main audio mix -----------------------> audio encoder ----+
 ```
 
-This approach captures the raw source output (before scene composition and filters applied at the scene level), so you get clean isolated recordings per source.
+The `obs_view` approach renders the source natively through OBS's internal render loop with no manual GPU readback. Audio is captured from the OBS main audio mix (all active audio sources).
 
 ## Building
 
@@ -35,19 +36,15 @@ This approach captures the raw source output (before scene composition and filte
 ### Build Steps
 
 ```bash
-# Clone
 git clone https://github.com/pugliatechs/obs-multirecord.git
 cd obs-multirecord
 
-# Configure (adjust OBS paths as needed)
 cmake -B build \
   -DCMAKE_PREFIX_PATH="/usr/lib/cmake/obs-studio;/usr/lib/cmake/qt6" \
   -DCMAKE_BUILD_TYPE=Release
 
-# Build
 cmake --build build --parallel
 
-# Install (to OBS plugin directory)
 sudo cmake --install build --prefix /usr
 ```
 
@@ -61,7 +58,6 @@ If you use the Flatpak version of OBS, install the plugin into:
 ### Arch Linux / Manjaro
 
 ```bash
-# Install OBS dev headers (if not already present)
 sudo pacman -S obs-studio qt6-base cmake
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -72,25 +68,33 @@ sudo cmake --install build --prefix /usr
 ## Usage
 
 1. Open OBS Studio
-2. Go to **View > Docks > Multi Recorder** (or find it in the dock area)
-3. Click **Add Pair** to add a new recording entry
-4. Select a **Video Source** and optionally a separate **Audio Source**
+2. Go to **View > Docks > Multi Recorder**
+3. Click **Add** to create a new recording entry
+4. Select a **Video Source** from the dropdown (only video-capable sources are listed)
 5. Set the **Output Directory** (click `...` to browse)
 6. Choose container format (MKV recommended), video/audio encoders, and bitrates
-7. Click **Start** on individual rows, or **Start All**
-8. Click **Stop** when done. Files are written to the configured directory
+7. Click the play button on individual rows, or **Rec All**
+8. Click the stop button when done. Files are written to the configured directory
+
+Double-click any row to edit its settings.
+
+### Audio
+
+Audio is captured from the OBS main audio mix. All active audio sources (Desktop Audio, Mic, etc.) are included in the recording, matching what the standard OBS recording captures.
 
 ### Filename Format
 
 Files are named using the pattern: `{SourceName}_{YYYYMMDD}_{HHMMSS}.{ext}`
+
+Spaces in source names are replaced with underscores.
 
 ## Architecture
 
 | File | Purpose |
 |------|---------|
 | `src/plugin-main.c` | Module entry point (`obs_module_load`) |
-| `src/record-pipeline.h/c` | Per-source recording pipeline (video/audio capture, encoding, muxing) |
-| `src/multi-record-dock.hpp/cpp` | Qt dock panel UI and config persistence |
+| `src/record-pipeline.h/c` | Per-source recording pipeline using `obs_view` |
+| `src/multi-record-dock.hpp/cpp` | Qt dock panel UI, settings dialog, and config persistence |
 | `src/source-combo-delegate.hpp/cpp` | Combo box delegate utility |
 | `data/locale/en-US.ini` | Localisation strings |
 

@@ -9,7 +9,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
-#include <QGridLayout>
 #include <QHeaderView>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -19,15 +18,15 @@
 #include <QStyle>
 
 /* ------------------------------------------------------------------ */
-/* PairSettingsDialog                                                  */
+/* EntrySettingsDialog                                                */
 /* ------------------------------------------------------------------ */
 
 static constexpr const char *CONTAINERS[] = {"mkv", "mp4", "mov", "ts"};
 static constexpr int NUM_CONTAINERS = 4;
 
-PairSettingsDialog::PairSettingsDialog(
+EntrySettingsDialog::EntrySettingsDialog(
 	RecordingEntry &entry,
-	const QStringList &sourceList,
+	const QStringList &videoSourceList,
 	const QStringList &videoEncoderIds,
 	const QStringList &videoEncoderNames,
 	const QStringList &audioEncoderIds,
@@ -35,31 +34,21 @@ PairSettingsDialog::PairSettingsDialog(
 	QWidget *parent)
 	: QDialog(parent), m_entry(entry)
 {
-	setWindowTitle("Recording Pair Settings");
+	setWindowTitle("Recording Settings");
 	setMinimumWidth(420);
 
 	auto *mainLayout = new QVBoxLayout(this);
 
-	/* -- Sources group -- */
-	auto *srcGroup = new QGroupBox("Sources", this);
+	/* -- Source group -- */
+	auto *srcGroup = new QGroupBox("Source", this);
 	auto *srcForm = new QFormLayout(srcGroup);
 
 	m_videoSourceCombo = new QComboBox();
-	m_videoSourceCombo->addItems(sourceList);
-	int vIdx = sourceList.indexOf(entry.videoSourceName);
+	m_videoSourceCombo->addItems(videoSourceList);
+	int vIdx = videoSourceList.indexOf(entry.videoSourceName);
 	if (vIdx >= 0)
 		m_videoSourceCombo->setCurrentIndex(vIdx);
 	srcForm->addRow("Video Source:", m_videoSourceCombo);
-
-	m_audioSourceCombo = new QComboBox();
-	m_audioSourceCombo->addItem("(same as video)");
-	m_audioSourceCombo->addItems(sourceList);
-	if (!entry.audioSourceName.isEmpty()) {
-		int aIdx = sourceList.indexOf(entry.audioSourceName);
-		if (aIdx >= 0)
-			m_audioSourceCombo->setCurrentIndex(aIdx + 1);
-	}
-	srcForm->addRow("Audio Source:", m_audioSourceCombo);
 
 	mainLayout->addWidget(srcGroup);
 
@@ -77,7 +66,7 @@ PairSettingsDialog::PairSettingsDialog(
 	dirLayout->addWidget(m_outputDirEdit);
 	dirLayout->addWidget(browseBtn);
 	connect(browseBtn, &QPushButton::clicked, this,
-		&PairSettingsDialog::onBrowseDir);
+		&EntrySettingsDialog::onBrowseDir);
 	outForm->addRow("Directory:", dirWidget);
 
 	m_containerCombo = new QComboBox();
@@ -90,7 +79,7 @@ PairSettingsDialog::PairSettingsDialog(
 
 	mainLayout->addWidget(outGroup);
 
-	/* -- Encoder group -- */
+	/* -- Encoding group -- */
 	auto *encGroup = new QGroupBox("Encoding", this);
 	auto *encForm = new QFormLayout(encGroup);
 
@@ -136,12 +125,12 @@ PairSettingsDialog::PairSettingsDialog(
 	auto *buttons = new QDialogButtonBox(
 		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 	connect(buttons, &QDialogButtonBox::accepted, this,
-		&PairSettingsDialog::onAccept);
+		&EntrySettingsDialog::onAccept);
 	connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 	mainLayout->addWidget(buttons);
 }
 
-void PairSettingsDialog::onBrowseDir()
+void EntrySettingsDialog::onBrowseDir()
 {
 	QString dir = QFileDialog::getExistingDirectory(
 		this, "Select Recording Directory", m_outputDirEdit->text());
@@ -149,7 +138,7 @@ void PairSettingsDialog::onBrowseDir()
 		m_outputDirEdit->setText(dir);
 }
 
-void PairSettingsDialog::onAccept()
+void EntrySettingsDialog::onAccept()
 {
 	if (m_videoSourceCombo->currentText().isEmpty()) {
 		QMessageBox::warning(this, "Settings",
@@ -163,11 +152,6 @@ void PairSettingsDialog::onAccept()
 	}
 
 	m_entry.videoSourceName = m_videoSourceCombo->currentText();
-	if (m_audioSourceCombo->currentIndex() == 0)
-		m_entry.audioSourceName = "";
-	else
-		m_entry.audioSourceName = m_audioSourceCombo->currentText();
-
 	m_entry.outputDir = m_outputDirEdit->text();
 	m_entry.container = m_containerCombo->currentText();
 	m_entry.videoEncoderId =
@@ -190,7 +174,6 @@ MultiRecordDock::MultiRecordDock(QWidget *parent)
 	: QDockWidget(parent)
 {
 	setObjectName("MultiRecordDock");
-	/* Hide our title bar - obs_frontend_add_dock_by_id provides its own */
 	setTitleBarWidget(new QWidget(this));
 	setupUi();
 
@@ -216,10 +199,6 @@ MultiRecordDock::~MultiRecordDock()
 	}
 }
 
-/* ------------------------------------------------------------------ */
-/* UI Setup                                                           */
-/* ------------------------------------------------------------------ */
-
 void MultiRecordDock::setupUi()
 {
 	auto *container = new QWidget(this);
@@ -227,10 +206,10 @@ void MultiRecordDock::setupUi()
 	mainLayout->setContentsMargins(4, 4, 4, 4);
 	mainLayout->setSpacing(4);
 
-	/* Table - compact: 4 columns */
+	/* Table - 3 columns: Source, Status, Actions */
 	m_table = new QTableWidget(0, COL_COUNT, container);
 	QStringList headers;
-	headers << "Video" << "Audio" << "Status" << "";
+	headers << "Source" << "Status" << "";
 	m_table->setHorizontalHeaderLabels(headers);
 
 	m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -242,10 +221,8 @@ void MultiRecordDock::setupUi()
 	m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	m_table->setFocusPolicy(Qt::NoFocus);
 
-	/* Column sizing */
 	auto *hdr = m_table->horizontalHeader();
-	hdr->setSectionResizeMode(COL_VIDEO_SOURCE, QHeaderView::Stretch);
-	hdr->setSectionResizeMode(COL_AUDIO_SOURCE, QHeaderView::Stretch);
+	hdr->setSectionResizeMode(COL_SOURCE, QHeaderView::Stretch);
 	hdr->setSectionResizeMode(COL_STATUS, QHeaderView::ResizeToContents);
 	hdr->setSectionResizeMode(COL_ACTIONS, QHeaderView::ResizeToContents);
 	hdr->setMinimumSectionSize(40);
@@ -257,10 +234,10 @@ void MultiRecordDock::setupUi()
 	btnLayout->setSpacing(4);
 
 	auto *addBtn = new QPushButton("Add");
-	addBtn->setToolTip("Add recording pair");
+	addBtn->setToolTip("Add recording entry");
 
 	auto *removeBtn = new QPushButton("Remove");
-	removeBtn->setToolTip("Remove selected pair");
+	removeBtn->setToolTip("Remove selected entry");
 
 	auto *startAllBtn = new QPushButton("Rec All");
 	startAllBtn->setToolTip("Start all recordings");
@@ -278,7 +255,7 @@ void MultiRecordDock::setupUi()
 	setWidget(container);
 
 	connect(addBtn, &QPushButton::clicked, this,
-		&MultiRecordDock::onAddPair);
+		&MultiRecordDock::onAddEntry);
 	connect(removeBtn, &QPushButton::clicked, this,
 		&MultiRecordDock::onRemoveSelected);
 	connect(startAllBtn, &QPushButton::clicked, this,
@@ -286,7 +263,6 @@ void MultiRecordDock::setupUi()
 	connect(stopAllBtn, &QPushButton::clicked, this,
 		&MultiRecordDock::onStopAll);
 
-	/* Double-click row to edit settings */
 	connect(m_table, &QTableWidget::cellDoubleClicked, this,
 		[this](int row, int) { onEditRow(row); });
 }
@@ -300,26 +276,16 @@ void MultiRecordDock::addEntryRow(const RecordingEntry &entry)
 	int row = m_table->rowCount();
 	m_table->insertRow(row);
 
-	/* Video source label */
-	auto *videoItem = new QTableWidgetItem(
+	auto *sourceItem = new QTableWidgetItem(
 		entry.videoSourceName.isEmpty() ? "(none)"
 						: entry.videoSourceName);
-	m_table->setItem(row, COL_VIDEO_SOURCE, videoItem);
+	m_table->setItem(row, COL_SOURCE, sourceItem);
 
-	/* Audio source label */
-	QString audioText = entry.audioSourceName.isEmpty()
-				    ? "(same)"
-				    : entry.audioSourceName;
-	auto *audioItem = new QTableWidgetItem(audioText);
-	m_table->setItem(row, COL_AUDIO_SOURCE, audioItem);
-
-	/* Status label */
 	auto *statusLabel = new QLabel("Idle");
 	statusLabel->setAlignment(Qt::AlignCenter);
 	statusLabel->setContentsMargins(4, 0, 4, 0);
 	m_table->setCellWidget(row, COL_STATUS, statusLabel);
 
-	/* Action buttons: settings, start/stop */
 	auto *actWidget = new QWidget();
 	auto *actLayout = new QHBoxLayout(actWidget);
 	actLayout->setContentsMargins(2, 0, 2, 0);
@@ -364,33 +330,25 @@ void MultiRecordDock::updateRowDisplay(int row)
 
 	const auto &e = m_entries[row];
 
-	auto *videoItem = m_table->item(row, COL_VIDEO_SOURCE);
-	if (videoItem)
-		videoItem->setText(e.videoSourceName.isEmpty()
+	auto *sourceItem = m_table->item(row, COL_SOURCE);
+	if (sourceItem)
+		sourceItem->setText(e.videoSourceName.isEmpty()
 					  ? "(none)"
 					  : e.videoSourceName);
-
-	auto *audioItem = m_table->item(row, COL_AUDIO_SOURCE);
-	if (audioItem)
-		audioItem->setText(e.audioSourceName.isEmpty()
-					  ? "(same)"
-					  : e.audioSourceName);
 }
 
 /* ------------------------------------------------------------------ */
 /* Source / Encoder enumeration                                       */
 /* ------------------------------------------------------------------ */
 
-QStringList MultiRecordDock::enumerateSources()
+QStringList MultiRecordDock::enumerateVideoSources()
 {
 	QStringList list;
 
-	/* Only enumerate actual sources (not scenes) that have
-	 * video or audio output capability. */
 	auto cb = [](void *param, obs_source_t *source) -> bool {
 		auto *l = static_cast<QStringList *>(param);
 		uint32_t flags = obs_source_get_output_flags(source);
-		if (flags & (OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO)) {
+		if (flags & OBS_SOURCE_VIDEO) {
 			const char *name = obs_source_get_name(source);
 			if (name && *name)
 				l->append(QString::fromUtf8(name));
@@ -432,7 +390,7 @@ void MultiRecordDock::enumerateEncoders()
 /* Slots                                                              */
 /* ------------------------------------------------------------------ */
 
-void MultiRecordDock::onAddPair()
+void MultiRecordDock::onAddEntry()
 {
 	RecordingEntry entry;
 	entry.container = "mkv";
@@ -449,11 +407,10 @@ void MultiRecordDock::onAddPair()
 			entry.outputDir = QString::fromUtf8(path);
 	}
 
-	/* Open settings dialog for the new pair */
-	PairSettingsDialog dlg(entry, m_sourceList,
-			       m_videoEncoderIds, m_videoEncoderNames,
-			       m_audioEncoderIds, m_audioEncoderNames,
-			       this);
+	EntrySettingsDialog dlg(entry, m_videoSourceList,
+				m_videoEncoderIds, m_videoEncoderNames,
+				m_audioEncoderIds, m_audioEncoderNames,
+				this);
 	if (dlg.exec() != QDialog::Accepted)
 		return;
 
@@ -506,12 +463,6 @@ MultiRecordDock::buildPipelineConfig(const RecordingEntry &entry)
 	cfg.video_source_name =
 		bstrdup(entry.videoSourceName.toUtf8().constData());
 
-	bfree(cfg.audio_source_name);
-	cfg.audio_source_name =
-		entry.audioSourceName.isEmpty()
-			? NULL
-			: bstrdup(entry.audioSourceName.toUtf8().constData());
-
 	bfree(cfg.output_dir);
 	cfg.output_dir = bstrdup(entry.outputDir.toUtf8().constData());
 
@@ -528,8 +479,6 @@ MultiRecordDock::buildPipelineConfig(const RecordingEntry &entry)
 
 	cfg.video_bitrate = entry.videoBitrate;
 	cfg.audio_bitrate = entry.audioBitrate;
-	cfg.width = entry.width;
-	cfg.height = entry.height;
 	cfg.fps_num = entry.fpsNum;
 	cfg.fps_den = entry.fpsDen;
 
@@ -545,7 +494,7 @@ void MultiRecordDock::onStartRow(int row)
 
 	if (entry.videoSourceName.isEmpty()) {
 		QMessageBox::warning(this, "Multi Recorder",
-				     "Please configure this pair first.");
+				     "Please configure this entry first.");
 		return;
 	}
 
@@ -595,7 +544,6 @@ void MultiRecordDock::onEditRow(int row)
 
 	auto &entry = m_entries[row];
 
-	/* Don't allow editing while recording */
 	if (entry.pipeline &&
 	    record_pipeline_get_state(entry.pipeline) == PIPELINE_RECORDING) {
 		QMessageBox::information(
@@ -604,17 +552,17 @@ void MultiRecordDock::onEditRow(int row)
 		return;
 	}
 
-	PairSettingsDialog dlg(entry, m_sourceList,
-			       m_videoEncoderIds, m_videoEncoderNames,
-			       m_audioEncoderIds, m_audioEncoderNames,
-			       this);
+	EntrySettingsDialog dlg(entry, m_videoSourceList,
+				m_videoEncoderIds, m_videoEncoderNames,
+				m_audioEncoderIds, m_audioEncoderNames,
+				this);
 	if (dlg.exec() == QDialog::Accepted)
 		updateRowDisplay(row);
 }
 
 void MultiRecordDock::onRefreshSources()
 {
-	m_sourceList = enumerateSources();
+	m_videoSourceList = enumerateVideoSources();
 	enumerateEncoders();
 }
 
@@ -630,7 +578,6 @@ void MultiRecordDock::onStatusTimer()
 		if (actWidget) {
 			auto btns = actWidget->findChildren<QToolButton *>();
 			if (btns.size() >= 3) {
-				/* [0]=settings, [1]=start, [2]=stop */
 				startBtn = btns[1];
 				stopBtn = btns[2];
 			}
@@ -712,15 +659,12 @@ void MultiRecordDock::saveConfig()
 		};
 
 		setStr("VideoSource", e.videoSourceName);
-		setStr("AudioSource", e.audioSourceName);
 		setStr("OutputDir", e.outputDir);
 		setStr("Container", e.container);
 		setStr("VideoEncoder", e.videoEncoderId);
 		setStr("AudioEncoder", e.audioEncoderId);
 		setInt("VideoBitrate", e.videoBitrate);
 		setInt("AudioBitrate", e.audioBitrate);
-		setInt("Width", e.width);
-		setInt("Height", e.height);
 		setInt("FpsNum", e.fpsNum);
 		setInt("FpsDen", e.fpsDen);
 	}
@@ -756,15 +700,12 @@ void MultiRecordDock::loadConfig()
 
 		RecordingEntry entry;
 		entry.videoSourceName = getStr("VideoSource");
-		entry.audioSourceName = getStr("AudioSource");
 		entry.outputDir = getStr("OutputDir");
 		entry.container = getStr("Container");
 		entry.videoEncoderId = getStr("VideoEncoder");
 		entry.audioEncoderId = getStr("AudioEncoder");
 		entry.videoBitrate = getInt("VideoBitrate");
 		entry.audioBitrate = getInt("AudioBitrate");
-		entry.width = getInt("Width");
-		entry.height = getInt("Height");
 		entry.fpsNum = getInt("FpsNum");
 		entry.fpsDen = getInt("FpsDen");
 
