@@ -8,6 +8,8 @@
 
 #include <time.h>
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 
 /* ------------------------------------------------------------------ */
 /* Config helpers                                                     */
@@ -83,16 +85,22 @@ char *record_pipeline_build_path(const struct record_pipeline_config *config,
 			p++;
 			switch (*p) {
 			case 'S':
-				/* Source name (sanitised) */
+				/* Source name (sanitised for filesystem safety) */
 				if (source_name) {
 					for (const char *s = source_name; *s;
 					     s++) {
 						char c = *s;
+						/* Block path separators, shell
+						 * metacharacters, and control
+						 * chars to prevent path
+						 * traversal and injection */
 						if (c == '/' || c == '\\' ||
 						    c == ':' || c == '*' ||
 						    c == '?' || c == '"' ||
 						    c == '<' || c == '>' ||
-						    c == '|')
+						    c == '|' || c == '.' ||
+						    c == '\0' ||
+						    (unsigned char)c < 0x20)
 							c = '_';
 						dstr_cat_ch(&filename, c);
 					}
@@ -198,14 +206,16 @@ static void on_output_stop(void *param, calldata_t *cd)
 {
 	UNUSED_PARAMETER(cd);
 	struct record_pipeline *p = param;
+	bool notify = false;
 
 	pthread_mutex_lock(&p->mutex);
 	if (p->state == PIPELINE_RECORDING || p->state == PIPELINE_STOPPING) {
 		p->state = PIPELINE_IDLE;
+		notify = true;
 	}
 	pthread_mutex_unlock(&p->mutex);
 
-	if (p->state_callback)
+	if (notify && p->state_callback)
 		p->state_callback(p, p->state_callback_param);
 }
 
@@ -329,7 +339,8 @@ static void render_source_to_video_output(struct record_pipeline *p)
 			}
 		} else {
 			/* BGRA or other: single plane copy */
-			uint32_t copy_linesize = cx * 4;
+			uint32_t copy_linesize =
+				(cx <= UINT32_MAX / 4) ? cx * 4 : linesize;
 			if (copy_linesize > linesize)
 				copy_linesize = linesize;
 			if (copy_linesize > output_frame.linesize[0])
@@ -604,10 +615,47 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		record_pipeline_build_path(&p->config,
 					   p->config.video_source_name);
 
+	/* Validate the output path stays within the configured directory.
+	 * Prevents path traversal via crafted source names or formats. */
+	{
+		char *real_dir = realpath(p->config.output_dir, NULL);
+		char *real_path = realpath(output_path, NULL);
+
+		/* If the output dir doesn't exist yet, that's an error */
+		if (!real_dir) {
+			free(real_path);
+			bfree(output_path);
+			set_error(p,
+				  "Output directory does not exist");
+			release_pipeline_objects(p);
+			return false;
+		}
+
+		/* If realpath of the output file resolves outside the
+		 * configured dir (or cannot be resolved because parent
+		 * dirs don't exist), reject it. For new files, realpath
+		 * returns NULL, so we also verify the directory component
+		 * of the path starts with the real output dir. */
+		if (real_path) {
+			size_t dir_len = strlen(real_dir);
+			if (strncmp(real_path, real_dir, dir_len) != 0) {
+				free(real_dir);
+				free(real_path);
+				bfree(output_path);
+				set_error(p,
+					  "Output path escapes "
+					  "configured directory");
+				release_pipeline_objects(p);
+				return false;
+			}
+			free(real_path);
+		}
+		free(real_dir);
+	}
+
 	obs_data_t *out_settings = obs_data_create();
 	obs_data_set_string(out_settings, "path", output_path);
 
-	/* Choose muxer based on container */
 	const char *muxer_id = "ffmpeg_muxer";
 
 	p->file_output = obs_output_create(muxer_id, "multi-rec-output",
