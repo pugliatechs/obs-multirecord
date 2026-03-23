@@ -1,0 +1,22 @@
+# Build
+build/
+cmake-build-*/
+.cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qt
+moc_*.cpp
+*.moc
+ui_*.h
+qrc_*.cpp
