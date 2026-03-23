@@ -1,7 +1,6 @@
 #include "record-pipeline.h"
 
 #include <obs-module.h>
-#include <media-io/video-frame.h>
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -10,6 +9,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+
+#define LOG_PREFIX "[obs-multi-record] "
 
 /* ------------------------------------------------------------------ */
 /* Config helpers                                                     */
@@ -25,7 +26,7 @@ void record_pipeline_config_init(struct record_pipeline_config *cfg)
 	cfg->audio_bitrate = 160;
 	cfg->fps_num = 30;
 	cfg->fps_den = 1;
-	cfg->filename_format = bstrdup("%S_%Y%m%d_%H%M%S");
+	cfg->filename_format = bstrdup("%N_%Y%m%d_%H%M%S");
 }
 
 static char *safe_strdup(const char *s)
@@ -64,8 +65,24 @@ void record_pipeline_config_free(struct record_pipeline_config *cfg)
 }
 
 /* ------------------------------------------------------------------ */
-/* Path builder                                                       */
+/* Path builder (%N=name, %Y%m%d%H%M%S=datetime)                     */
 /* ------------------------------------------------------------------ */
+
+static void sanitize_name(struct dstr *out, const char *name)
+{
+	if (!name || !*name) {
+		dstr_cat(out, "unknown");
+		return;
+	}
+	for (const char *s = name; *s; s++) {
+		char c = *s;
+		if (c == '/' || c == '\\' || c == ':' || c == '*' ||
+		    c == '?' || c == '"' || c == '<' || c == '>' ||
+		    c == '|' || c == '.' || (unsigned char)c < 0x20)
+			c = '_';
+		dstr_cat_ch(out, c);
+	}
+}
 
 char *record_pipeline_build_path(const struct record_pipeline_config *config,
 				 const char *source_name)
@@ -77,57 +94,21 @@ char *record_pipeline_build_path(const struct record_pipeline_config *config,
 
 	const char *fmt = config->filename_format;
 	if (!fmt || !*fmt)
-		fmt = "%S_%Y%m%d_%H%M%S";
+		fmt = "%N_%Y%m%d_%H%M%S";
 
 	struct dstr filename = {0};
 	for (const char *p = fmt; *p; p++) {
 		if (*p == '%' && *(p + 1)) {
 			p++;
 			switch (*p) {
-			case 'S':
-				/* Source name (sanitised for filesystem safety) */
-				if (source_name) {
-					for (const char *s = source_name; *s;
-					     s++) {
-						char c = *s;
-						/* Block path separators, shell
-						 * metacharacters, and control
-						 * chars to prevent path
-						 * traversal and injection */
-						if (c == '/' || c == '\\' ||
-						    c == ':' || c == '*' ||
-						    c == '?' || c == '"' ||
-						    c == '<' || c == '>' ||
-						    c == '|' || c == '.' ||
-						    c == '\0' ||
-						    (unsigned char)c < 0x20)
-							c = '_';
-						dstr_cat_ch(&filename, c);
-					}
-				} else {
-					dstr_cat(&filename, "unknown");
-				}
-				break;
-			case 'Y':
-				dstr_catf(&filename, "%04d",
-					  tm_info.tm_year + 1900);
-				break;
-			case 'm':
-				dstr_catf(&filename, "%02d",
-					  tm_info.tm_mon + 1);
-				break;
-			case 'd':
-				dstr_catf(&filename, "%02d", tm_info.tm_mday);
-				break;
-			case 'H':
-				dstr_catf(&filename, "%02d", tm_info.tm_hour);
-				break;
-			case 'M':
-				dstr_catf(&filename, "%02d", tm_info.tm_min);
-				break;
-			case '%':
-				dstr_cat_ch(&filename, '%');
-				break;
+			case 'N': sanitize_name(&filename, source_name); break;
+			case 'Y': dstr_catf(&filename, "%04d", tm_info.tm_year + 1900); break;
+			case 'm': dstr_catf(&filename, "%02d", tm_info.tm_mon + 1); break;
+			case 'd': dstr_catf(&filename, "%02d", tm_info.tm_mday); break;
+			case 'H': dstr_catf(&filename, "%02d", tm_info.tm_hour); break;
+			case 'M': dstr_catf(&filename, "%02d", tm_info.tm_min); break;
+			case 'S': dstr_catf(&filename, "%02d", tm_info.tm_sec); break;
+			case '%': dstr_cat_ch(&filename, '%'); break;
 			default:
 				dstr_cat_ch(&filename, '%');
 				dstr_cat_ch(&filename, *p);
@@ -139,17 +120,13 @@ char *record_pipeline_build_path(const struct record_pipeline_config *config,
 	}
 
 	const char *dir = config->output_dir;
-	if (!dir || !*dir)
-		dir = ".";
-
+	if (!dir || !*dir) dir = ".";
 	const char *ext = config->container;
-	if (!ext || !*ext)
-		ext = "mkv";
+	if (!ext || !*ext) ext = "mkv";
 
 	dstr_printf(&path, "%s/%s.%s", dir, filename.array, ext);
-
 	dstr_free(&filename);
-	return path.array; /* caller bfree()s */
+	return path.array;
 }
 
 /* ------------------------------------------------------------------ */
@@ -161,18 +138,13 @@ size_t record_pipeline_enum_video_encoders(
 {
 	size_t count = 0;
 	const char *id = NULL;
-
 	for (size_t i = 0; obs_enum_encoder_types(i, &id); i++) {
 		if (obs_get_encoder_type(id) != OBS_ENCODER_VIDEO)
 			continue;
-
 		const char *name = obs_encoder_get_display_name(id);
-		if (!name)
-			name = id;
-
+		if (!name) name = id;
 		count++;
-		if (cb && !cb(param, id, name))
-			break;
+		if (cb && !cb(param, id, name)) break;
 	}
 	return count;
 }
@@ -182,18 +154,13 @@ size_t record_pipeline_enum_audio_encoders(
 {
 	size_t count = 0;
 	const char *id = NULL;
-
 	for (size_t i = 0; obs_enum_encoder_types(i, &id); i++) {
 		if (obs_get_encoder_type(id) != OBS_ENCODER_AUDIO)
 			continue;
-
 		const char *name = obs_encoder_get_display_name(id);
-		if (!name)
-			name = id;
-
+		if (!name) name = id;
 		count++;
-		if (cb && !cb(param, id, name))
-			break;
+		if (cb && !cb(param, id, name)) break;
 	}
 	return count;
 }
@@ -215,6 +182,9 @@ static void on_output_stop(void *param, calldata_t *cd)
 	}
 	pthread_mutex_unlock(&p->mutex);
 
+	blog(LOG_INFO, LOG_PREFIX "Output stopped for '%s'",
+	     p->config.video_source_name ? p->config.video_source_name : "?");
+
 	if (notify && p->state_callback)
 		p->state_callback(p, p->state_callback_param);
 }
@@ -228,12 +198,15 @@ static void on_output_start(void *param, calldata_t *cd)
 	p->state = PIPELINE_RECORDING;
 	pthread_mutex_unlock(&p->mutex);
 
+	blog(LOG_INFO, LOG_PREFIX "Output started for '%s'",
+	     p->config.video_source_name ? p->config.video_source_name : "?");
+
 	if (p->state_callback)
 		p->state_callback(p, p->state_callback_param);
 }
 
 /* ------------------------------------------------------------------ */
-/* Audio input callback                                               */
+/* Audio input callback (pulled by audio output thread)               */
 /* ------------------------------------------------------------------ */
 
 static bool audio_input_callback(void *param, uint64_t start_ts,
@@ -242,22 +215,19 @@ static bool audio_input_callback(void *param, uint64_t start_ts,
 				 struct audio_output_data *mixes)
 {
 	UNUSED_PARAMETER(mixers);
+	UNUSED_PARAMETER(end_ts);
 	struct record_pipeline *p = param;
 
 	if (!p->audio_source)
 		return false;
 
-	/*
-	 * Pull the source's current audio mix.  We request mix index 0.
-	 * obs_source_get_audio_mix() fills `mixes[0].data` planes.
-	 */
 	struct obs_source_audio_mix source_mix;
 	obs_source_get_audio_mix(p->audio_source, &source_mix);
 
 	const struct audio_output_info *info =
 		audio_output_get_info(p->audio_output);
 	size_t channels = get_audio_channels(info->speakers);
-	size_t frames = AUDIO_OUTPUT_FRAMES; /* per-block size */
+	size_t frames = AUDIO_OUTPUT_FRAMES;
 
 	for (size_t ch = 0; ch < channels && ch < MAX_AV_PLANES; ch++) {
 		if (source_mix.output[0].data[ch]) {
@@ -268,112 +238,7 @@ static bool audio_input_callback(void *param, uint64_t start_ts,
 	}
 
 	*out_ts = start_ts;
-	UNUSED_PARAMETER(end_ts);
 	return true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Video rendering (tick-based capture into video_output)              */
-/* ------------------------------------------------------------------ */
-
-static void render_source_to_video_output(struct record_pipeline *p)
-{
-	if (!p->video_source || !p->video_output || !p->texrender ||
-	    !p->stagesurface)
-		return;
-
-	uint32_t source_cx = obs_source_get_width(p->video_source);
-	uint32_t source_cy = obs_source_get_height(p->video_source);
-	if (source_cx == 0 || source_cy == 0)
-		return;
-
-	uint32_t cx = p->cx;
-	uint32_t cy = p->cy;
-	if (cx == 0 || cy == 0) {
-		cx = source_cx;
-		cy = source_cy;
-	}
-
-	/* Render to texture */
-	gs_texrender_reset(p->texrender);
-	if (!gs_texrender_begin(p->texrender, cx, cy))
-		return;
-
-	struct vec4 clear_color;
-	vec4_zero(&clear_color);
-	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
-	gs_ortho(0.0f, (float)source_cx, 0.0f, (float)source_cy, -100.0f,
-		 100.0f);
-
-	obs_source_video_render(p->video_source);
-	gs_texrender_end(p->texrender);
-
-	/* Stage to CPU */
-	gs_texture_t *tex = gs_texrender_get_texture(p->texrender);
-	if (!tex)
-		return;
-
-	gs_stage_texture(p->stagesurface, tex);
-
-	uint8_t *data;
-	uint32_t linesize;
-	if (!gs_stagesurface_map(p->stagesurface, &data, &linesize))
-		return;
-
-	/* Copy into video_output frame */
-	struct video_frame output_frame;
-	if (video_output_lock_frame(p->video_output, &output_frame, 1,
-				    os_gettime_ns())) {
-		const struct video_output_info *voi =
-			video_output_get_info(p->video_output);
-
-		if (voi->format == VIDEO_FORMAT_NV12) {
-			/* For NV12: just copy the raw staged data.
-			 * The stagesurface format should match. */
-			uint32_t h = cy;
-			for (uint32_t y = 0; y < h; y++) {
-				memcpy(output_frame.data[0] +
-					       y * output_frame.linesize[0],
-				       data + y * linesize,
-				       cx < linesize ? cx : linesize);
-			}
-		} else {
-			/* BGRA or other: single plane copy */
-			uint32_t copy_linesize =
-				(cx <= UINT32_MAX / 4) ? cx * 4 : linesize;
-			if (copy_linesize > linesize)
-				copy_linesize = linesize;
-			if (copy_linesize > output_frame.linesize[0])
-				copy_linesize = output_frame.linesize[0];
-			for (uint32_t y = 0; y < cy; y++) {
-				memcpy(output_frame.data[0] +
-					       y * output_frame.linesize[0],
-				       data + y * linesize, copy_linesize);
-			}
-		}
-
-		video_output_unlock_frame(p->video_output);
-	}
-
-	gs_stagesurface_unmap(p->stagesurface);
-}
-
-/* Called on the graphics thread via obs_add_tick_callback */
-static void pipeline_video_tick(void *param, float seconds)
-{
-	UNUSED_PARAMETER(seconds);
-	struct record_pipeline *p = param;
-
-	/* Push frames during STARTING (so the output/encoder can bootstrap)
-	 * and RECORDING (normal operation). Also keep pushing during
-	 * STOPPING so obs_output_stop() can drain the encoder without
-	 * deadlocking. */
-	enum record_pipeline_state s = p->state;
-	if (s != PIPELINE_STARTING && s != PIPELINE_RECORDING &&
-	    s != PIPELINE_STOPPING)
-		return;
-
-	render_source_to_video_output(p);
 }
 
 /* ------------------------------------------------------------------ */
@@ -407,6 +272,8 @@ void record_pipeline_destroy(struct record_pipeline *pipeline)
 
 static void set_error(struct record_pipeline *p, const char *msg)
 {
+	blog(LOG_ERROR, LOG_PREFIX "%s (source: %s)", msg,
+	     p->config.video_source_name ? p->config.video_source_name : "?");
 	bfree(p->last_error);
 	p->last_error = bstrdup(msg);
 	p->state = PIPELINE_ERROR;
@@ -417,11 +284,7 @@ static void set_error(struct record_pipeline *p, const char *msg)
 
 static void release_pipeline_objects(struct record_pipeline *p)
 {
-	if (p->tick_registered) {
-		obs_remove_tick_callback(pipeline_video_tick, p);
-		p->tick_registered = false;
-	}
-
+	/* 1. Disconnect output signals and release output */
 	if (p->file_output) {
 		signal_handler_t *sh =
 			obs_output_get_signal_handler(p->file_output);
@@ -431,6 +294,7 @@ static void release_pipeline_objects(struct record_pipeline *p)
 		p->file_output = NULL;
 	}
 
+	/* 2. Release encoders */
 	if (p->video_encoder) {
 		obs_encoder_release(p->video_encoder);
 		p->video_encoder = NULL;
@@ -440,25 +304,33 @@ static void release_pipeline_objects(struct record_pipeline *p)
 		p->audio_encoder = NULL;
 	}
 
-	obs_enter_graphics();
-	if (p->stagesurface) {
-		gs_stagesurface_destroy(p->stagesurface);
-		p->stagesurface = NULL;
+	/* 3. Remove view from render loop and destroy */
+	if (p->view) {
+		obs_view_set_source(p->view, 0, NULL);
+		obs_view_remove(p->view);
+		obs_view_destroy(p->view);
+		p->view = NULL;
+		p->view_video = NULL;
+		blog(LOG_INFO, LOG_PREFIX "View destroyed");
 	}
-	if (p->texrender) {
-		gs_texrender_destroy(p->texrender);
-		p->texrender = NULL;
-	}
-	obs_leave_graphics();
 
-	if (p->video_output) {
-		video_output_stop(p->video_output);
-		video_output_close(p->video_output);
-		p->video_output = NULL;
-	}
+	/* 4. Close audio output */
 	if (p->audio_output) {
 		audio_output_close(p->audio_output);
 		p->audio_output = NULL;
+	}
+
+	/* 5. Deactivate and release sources */
+	if (p->source_showing) {
+		if (p->video_source) {
+			obs_source_dec_showing(p->video_source);
+			obs_source_dec_active(p->video_source);
+		}
+		if (p->audio_source && p->audio_source != p->video_source) {
+			obs_source_dec_showing(p->audio_source);
+			obs_source_dec_active(p->audio_source);
+		}
+		p->source_showing = false;
 	}
 
 	if (p->video_source) {
@@ -485,6 +357,9 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	p->state = PIPELINE_STARTING;
 	pthread_mutex_unlock(&p->mutex);
 
+	blog(LOG_INFO, LOG_PREFIX "Starting pipeline for '%s'",
+	     p->config.video_source_name ? p->config.video_source_name : "?");
+
 	/* 1. Resolve sources */
 	if (!p->config.video_source_name || !*p->config.video_source_name) {
 		set_error(p, "No video source configured");
@@ -498,7 +373,6 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		return false;
 	}
 
-	/* Audio source: explicit or same as video */
 	if (p->config.audio_source_name && *p->config.audio_source_name) {
 		p->audio_source =
 			obs_get_source_by_name(p->config.audio_source_name);
@@ -512,40 +386,77 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		obs_source_get_ref(p->audio_source);
 	}
 
-	/* 2. Determine resolution */
-	p->cx = p->config.width;
-	p->cy = p->config.height;
-	if (p->cx == 0 || p->cy == 0) {
-		p->cx = obs_source_get_width(p->video_source);
-		p->cy = obs_source_get_height(p->video_source);
+	/* 2. Activate sources */
+	obs_source_inc_active(p->video_source);
+	obs_source_inc_showing(p->video_source);
+	if (p->audio_source != p->video_source) {
+		obs_source_inc_active(p->audio_source);
+		obs_source_inc_showing(p->audio_source);
 	}
-	if (p->cx == 0)
-		p->cx = 1920;
-	if (p->cy == 0)
-		p->cy = 1080;
+	p->source_showing = true;
 
-	int fps_num = p->config.fps_num > 0 ? p->config.fps_num : 30;
-	int fps_den = p->config.fps_den > 0 ? p->config.fps_den : 1;
-
-	/* 3. Create virtual video output */
-	struct video_output_info voi = {0};
-	voi.name = "multi-rec-video";
-	voi.format = VIDEO_FORMAT_BGRA;
-	voi.fps_num = fps_num;
-	voi.fps_den = fps_den;
-	voi.width = p->cx;
-	voi.height = p->cy;
-	voi.cache_size = 6;
-	voi.colorspace = VIDEO_CS_SRGB;
-	voi.range = VIDEO_RANGE_FULL;
-
-	if (video_output_open(&p->video_output, &voi) != VIDEO_OUTPUT_SUCCESS) {
-		set_error(p, "Failed to open virtual video output");
+	/* 3. Determine resolution (native source size) */
+	p->cx = obs_source_get_width(p->video_source);
+	p->cy = obs_source_get_height(p->video_source);
+	if (p->cx == 0 || p->cy == 0) {
+		for (int retry = 0; retry < 10; retry++) {
+			os_sleep_ms(100);
+			p->cx = obs_source_get_width(p->video_source);
+			p->cy = obs_source_get_height(p->video_source);
+			if (p->cx > 0 && p->cy > 0)
+				break;
+		}
+	}
+	if (p->cx == 0 || p->cy == 0) {
+		set_error(p, "Source reports 0x0 resolution");
 		release_pipeline_objects(p);
 		return false;
 	}
 
-	/* 4. Create virtual audio output */
+	int fps_num = p->config.fps_num > 0 ? p->config.fps_num : 30;
+	int fps_den = p->config.fps_den > 0 ? p->config.fps_den : 1;
+
+	blog(LOG_INFO, LOG_PREFIX "Resolution: %ux%u @ %d/%d fps",
+	     p->cx, p->cy, fps_num, fps_den);
+
+	/* 4. Create an obs_view to render the source.
+	 *    This is the approach used by obs-source-record:
+	 *    the view renders the source natively into its own
+	 *    video_t output, with no GPU readback needed. */
+	p->view = obs_view_create();
+	if (!p->view) {
+		set_error(p, "Failed to create obs_view");
+		release_pipeline_objects(p);
+		return false;
+	}
+
+	/* Set the source on channel 0 of the view */
+	obs_view_set_source(p->view, 0, p->video_source);
+
+	/* Add the view to the render loop with custom video settings */
+	struct obs_video_info ovi = {0};
+	ovi.fps_num = fps_num;
+	ovi.fps_den = fps_den;
+	ovi.base_width = p->cx;
+	ovi.base_height = p->cy;
+	ovi.output_width = p->cx;
+	ovi.output_height = p->cy;
+	ovi.output_format = VIDEO_FORMAT_NV12;
+	ovi.gpu_conversion = true;
+	ovi.colorspace = VIDEO_CS_709;
+	ovi.range = VIDEO_RANGE_PARTIAL;
+	ovi.scale_type = OBS_SCALE_BICUBIC;
+
+	p->view_video = obs_view_add2(p->view, &ovi);
+	if (!p->view_video) {
+		set_error(p, "Failed to add view to render loop");
+		release_pipeline_objects(p);
+		return false;
+	}
+
+	blog(LOG_INFO, LOG_PREFIX "View created and added to render loop");
+
+	/* 5. Create audio output */
 	struct audio_output_info aoi = {0};
 	aoi.name = "multi-rec-audio";
 	aoi.speakers = SPEAKERS_STEREO;
@@ -555,25 +466,12 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	aoi.input_param = p;
 
 	if (audio_output_open(&p->audio_output, &aoi) != AUDIO_OUTPUT_SUCCESS) {
-		set_error(p, "Failed to open virtual audio output");
+		set_error(p, "Failed to open audio output");
 		release_pipeline_objects(p);
 		return false;
 	}
 
-	/* 5. Create GPU resources for source capture */
-	obs_enter_graphics();
-	p->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-	p->stagesurface =
-		gs_stagesurface_create(p->cx, p->cy, GS_BGRA);
-	obs_leave_graphics();
-
-	if (!p->texrender || !p->stagesurface) {
-		set_error(p, "Failed to create GPU staging resources");
-		release_pipeline_objects(p);
-		return false;
-	}
-
-	/* 6. Create encoders */
+	/* 6. Create video encoder (connects to view's video output) */
 	const char *venc_id = p->config.video_encoder_id;
 	if (!venc_id || !*venc_id)
 		venc_id = "obs_x264";
@@ -582,8 +480,6 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	if (p->config.video_bitrate > 0)
 		obs_data_set_int(venc_settings, "bitrate",
 				 p->config.video_bitrate);
-	obs_data_set_int(venc_settings, "width", p->cx);
-	obs_data_set_int(venc_settings, "height", p->cy);
 
 	p->video_encoder = obs_video_encoder_create(
 		venc_id, "multi-rec-venc", venc_settings, NULL);
@@ -594,8 +490,10 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		release_pipeline_objects(p);
 		return false;
 	}
-	obs_encoder_set_video(p->video_encoder, p->video_output);
+	/* Connect encoder to the view's video output (not OBS main) */
+	obs_encoder_set_video(p->video_encoder, p->view_video);
 
+	/* 7. Create audio encoder */
 	const char *aenc_id = p->config.audio_encoder_id;
 	if (!aenc_id || !*aenc_id)
 		aenc_id = "ffmpeg_aac";
@@ -616,55 +514,29 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	}
 	obs_encoder_set_audio(p->audio_encoder, p->audio_output);
 
-	/* 7. Create file output (muxer) */
+	/* 8. Create file output */
 	char *output_path =
 		record_pipeline_build_path(&p->config,
 					   p->config.video_source_name);
 
-	/* Validate the output path stays within the configured directory.
-	 * Prevents path traversal via crafted source names or formats. */
+	/* Validate path stays within output dir */
 	{
 		char *real_dir = realpath(p->config.output_dir, NULL);
-		char *real_path = realpath(output_path, NULL);
-
-		/* If the output dir doesn't exist yet, that's an error */
 		if (!real_dir) {
-			free(real_path);
 			bfree(output_path);
-			set_error(p,
-				  "Output directory does not exist");
+			set_error(p, "Output directory does not exist");
 			release_pipeline_objects(p);
 			return false;
-		}
-
-		/* If realpath of the output file resolves outside the
-		 * configured dir (or cannot be resolved because parent
-		 * dirs don't exist), reject it. For new files, realpath
-		 * returns NULL, so we also verify the directory component
-		 * of the path starts with the real output dir. */
-		if (real_path) {
-			size_t dir_len = strlen(real_dir);
-			if (strncmp(real_path, real_dir, dir_len) != 0) {
-				free(real_dir);
-				free(real_path);
-				bfree(output_path);
-				set_error(p,
-					  "Output path escapes "
-					  "configured directory");
-				release_pipeline_objects(p);
-				return false;
-			}
-			free(real_path);
 		}
 		free(real_dir);
 	}
 
+	blog(LOG_INFO, LOG_PREFIX "Output path: %s", output_path);
+
 	obs_data_t *out_settings = obs_data_create();
 	obs_data_set_string(out_settings, "path", output_path);
 
-	const char *muxer_id = "ffmpeg_muxer";
-
-	p->file_output = obs_output_create(muxer_id, "multi-rec-output",
+	p->file_output = obs_output_create("ffmpeg_muxer", "multi-rec-output",
 					   out_settings, NULL);
 	obs_data_release(out_settings);
 	bfree(output_path);
@@ -678,24 +550,22 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 	obs_output_set_video_encoder(p->file_output, p->video_encoder);
 	obs_output_set_audio_encoder(p->file_output, p->audio_encoder, 0);
 
-	/* Connect signals */
 	signal_handler_t *sh =
 		obs_output_get_signal_handler(p->file_output);
 	signal_handler_connect(sh, "start", on_output_start, p);
 	signal_handler_connect(sh, "stop", on_output_stop, p);
 
-	/* 8. Register tick callback to render source each frame */
-	obs_add_tick_callback(pipeline_video_tick, p);
-	p->tick_registered = true;
-
 	/* 9. Start the output */
 	if (!obs_output_start(p->file_output)) {
 		const char *err = obs_output_get_last_error(p->file_output);
+		blog(LOG_ERROR, LOG_PREFIX "obs_output_start failed: %s",
+		     err ? err : "unknown");
 		set_error(p, err ? err : "Failed to start output");
 		release_pipeline_objects(p);
 		return false;
 	}
 
+	blog(LOG_INFO, LOG_PREFIX "Pipeline started successfully");
 	return true;
 }
 
@@ -713,11 +583,16 @@ void record_pipeline_stop(struct record_pipeline *pipeline)
 	pipeline->state = PIPELINE_STOPPING;
 	pthread_mutex_unlock(&pipeline->mutex);
 
-	/* Force-stop the output to avoid blocking the UI thread.
-	 * A graceful obs_output_stop() waits for the encoder to drain,
-	 * which can deadlock if frames stop arriving. */
-	if (pipeline->file_output)
+	blog(LOG_INFO, LOG_PREFIX "Stopping pipeline for '%s'",
+	     pipeline->config.video_source_name
+		     ? pipeline->config.video_source_name
+		     : "?");
+
+	/* Force-stop output first */
+	if (pipeline->file_output) {
 		obs_output_force_stop(pipeline->file_output);
+		blog(LOG_INFO, LOG_PREFIX "Output force-stopped");
+	}
 
 	release_pipeline_objects(pipeline);
 
@@ -728,6 +603,8 @@ void record_pipeline_stop(struct record_pipeline *pipeline)
 	if (pipeline->state_callback)
 		pipeline->state_callback(pipeline,
 					 pipeline->state_callback_param);
+
+	blog(LOG_INFO, LOG_PREFIX "Pipeline stopped");
 }
 
 enum record_pipeline_state

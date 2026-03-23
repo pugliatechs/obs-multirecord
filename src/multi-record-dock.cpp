@@ -385,6 +385,8 @@ QStringList MultiRecordDock::enumerateSources()
 {
 	QStringList list;
 
+	/* Only enumerate actual sources (not scenes) that have
+	 * video or audio output capability. */
 	auto cb = [](void *param, obs_source_t *source) -> bool {
 		auto *l = static_cast<QStringList *>(param);
 		uint32_t flags = obs_source_get_output_flags(source);
@@ -396,15 +398,6 @@ QStringList MultiRecordDock::enumerateSources()
 		return true;
 	};
 	obs_enum_sources(cb, &list);
-
-	auto sceneCb = [](void *param, obs_source_t *source) -> bool {
-		auto *l = static_cast<QStringList *>(param);
-		const char *name = obs_source_get_name(source);
-		if (name && *name)
-			l->append(QString::fromUtf8(name));
-		return true;
-	};
-	obs_enum_scenes(sceneCb, &list);
 
 	list.sort(Qt::CaseInsensitive);
 	list.removeDuplicates();
