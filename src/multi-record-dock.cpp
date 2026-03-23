@@ -190,7 +190,8 @@ MultiRecordDock::MultiRecordDock(QWidget *parent)
 	: QDockWidget(parent)
 {
 	setObjectName("MultiRecordDock");
-	setWindowTitle("Multi Recorder");
+	/* Hide our title bar - obs_frontend_add_dock_by_id provides its own */
+	setTitleBarWidget(new QWidget(this));
 	setupUi();
 
 	onRefreshSources();
@@ -255,12 +256,10 @@ void MultiRecordDock::setupUi()
 	auto *btnLayout = new QHBoxLayout();
 	btnLayout->setSpacing(4);
 
-	auto *addBtn = new QPushButton("+");
-	addBtn->setFixedWidth(28);
+	auto *addBtn = new QPushButton("Add");
 	addBtn->setToolTip("Add recording pair");
 
-	auto *removeBtn = new QPushButton("-");
-	removeBtn->setFixedWidth(28);
+	auto *removeBtn = new QPushButton("Remove");
 	removeBtn->setToolTip("Remove selected pair");
 
 	auto *startAllBtn = new QPushButton("Rec All");
