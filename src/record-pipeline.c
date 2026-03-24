@@ -7,8 +7,6 @@
 
 #include <time.h>
 #include <string.h>
-#include <stdlib.h>
-#include <limits.h>
 
 #define LOG_PREFIX "[obs-multi-record] "
 
@@ -89,7 +87,11 @@ char *record_pipeline_build_path(const struct record_pipeline_config *config,
 	struct dstr path = {0};
 	time_t now = time(NULL);
 	struct tm tm_info;
+#ifdef _WIN32
+	localtime_s(&tm_info, &now);
+#else
 	localtime_r(&now, &tm_info);
+#endif
 
 	const char *fmt = config->filename_format;
 	if (!fmt || !*fmt)
@@ -435,16 +437,16 @@ bool record_pipeline_start(struct record_pipeline *pipeline)
 		record_pipeline_build_path(&p->config,
 					   p->config.video_source_name);
 
-	/* Validate path stays within output dir */
+	/* Validate output directory exists */
 	{
-		char *real_dir = realpath(p->config.output_dir, NULL);
-		if (!real_dir) {
+		char real_dir[512];
+		if (!os_get_abs_path(p->config.output_dir, real_dir,
+				     sizeof(real_dir))) {
 			bfree(output_path);
 			set_error(p, "Output directory does not exist");
 			release_pipeline_objects(p);
 			return false;
 		}
-		free(real_dir);
 	}
 
 	blog(LOG_INFO, LOG_PREFIX "Output path: %s", output_path);

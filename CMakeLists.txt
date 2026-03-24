@@ -8,9 +8,6 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # --- Find OBS SDK ---
-# When building standalone (not inside OBS source tree), set OBS_SOURCE_DIR
-# or CMAKE_PREFIX_PATH to point at your OBS install/build.
-
 if(NOT TARGET OBS::libobs)
     find_package(libobs REQUIRED)
 endif()
@@ -40,7 +37,7 @@ add_library(obs-multi-record MODULE
 
 set_target_properties(obs-multi-record PROPERTIES
     AUTOMOC ON
-    PREFIX ""               # no 'lib' prefix on Linux
+    PREFIX ""
 )
 
 target_include_directories(obs-multi-record PRIVATE
@@ -53,18 +50,27 @@ target_link_libraries(obs-multi-record PRIVATE
     ${QT_LIBS}
 )
 
-# --- Install (obs-plugintemplate style) ---
+# --- Install (cross-platform) ---
 if(COMMAND install_obs_plugin_with_data)
     install_obs_plugin_with_data(obs-multi-record data)
 else()
-    # Fallback manual install
-    if(CMAKE_INSTALL_PREFIX)
-        install(TARGETS obs-multi-record
-            LIBRARY DESTINATION lib/obs-plugins
-            RUNTIME DESTINATION lib/obs-plugins
-        )
-        install(DIRECTORY data/
-            DESTINATION share/obs/obs-plugins/obs-multi-record
-        )
+    # Platform-specific install paths
+    if(APPLE)
+        set(_plugin_dest "obs-plugins")
+        set(_data_dest "data/obs-plugins/obs-multi-record")
+    elseif(WIN32)
+        set(_plugin_dest "obs-plugins/64bit")
+        set(_data_dest "data/obs-plugins/obs-multi-record")
+    else()
+        set(_plugin_dest "lib/obs-plugins")
+        set(_data_dest "share/obs/obs-plugins/obs-multi-record")
     endif()
+
+    install(TARGETS obs-multi-record
+        LIBRARY DESTINATION ${_plugin_dest}
+        RUNTIME DESTINATION ${_plugin_dest}
+    )
+    install(DIRECTORY data/
+        DESTINATION ${_data_dest}
+    )
 endif()
