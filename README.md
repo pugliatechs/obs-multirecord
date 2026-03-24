@@ -4,6 +4,10 @@ An OBS Studio plugin that records individual video sources to separate files, in
 
 Works on Linux, Windows, and macOS.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="Recording Settings dialog" width="400">
+</p>
+
 ## Features
 
 - **Multiple source recordings** - record any number of video sources simultaneously to separate files
